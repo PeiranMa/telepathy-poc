@@ -72,3 +72,47 @@ func NewRedisCache(hashName string, opt *redis.Options /*opt *redis.ClusterOptio
 	}
 
 }
+
+func (rc *redisCache) Exist(key string) (bool, bool) {
+	redisScript := redis.NewScript(`
+	local infinish = redis.call("hexists", "finish", KEYS[1])
+	local infailed = redis.call("hexists", "failed", KEYS[1])
+	return {infinish, infailed}
+	`)
+	res, err := redisScript.Run(context.Background(), rc.rdb, []string{key}).Result()
+	if err != nil {
+		fmt.Println("Exist error : ", err)
+		return false, false
+	}
+	return res.([]interface{})[0].(int64) == 1, res.([]interface{})[1].(int64) == 1
+
+}
+
+func (rc *redisCache) SetAndDel(key string, val interface{}) error {
+	redisScript := redis.NewScript(`
+	redis.call("hsetnx", "finish", KEYS[1], ARGV[1])
+	redis.call("hdel", "failed", KEYS[1])
+	return 1 
+	`)
+	_, err := redisScript.Run(context.Background(), rc.rdb, []string{key}, val).Result()
+	if err != nil {
+		fmt.Println("SetAndDel error : ", err)
+		return err
+	}
+	return nil
+}
+
+func (rc *redisCache) ExistAndSet(key string, val interface{}) error {
+	redisScript := redis.NewScript(`
+	if redis.call("hexists", "finish", KEYS[1]) == 0 then
+	redis.call("hsetnx", "failed", KEYS[1],ARGV[1])
+	end
+	return 1
+	`)
+	_, err := redisScript.Run(context.Background(), rc.rdb, []string{key}, val).Result()
+	if err != nil {
+		fmt.Println("ExistAndSet error : ", err)
+		return err
+	}
+	return nil
+}

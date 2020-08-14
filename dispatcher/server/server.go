@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 	"github.com/nsqio/go-nsq"
 	pb "poc.dispatcher/protos"
 )
@@ -42,25 +42,48 @@ func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskRespo
 	// If exists, put it into `working_msg` cache.
 	// Else: return empty error.
 	fid := getFetcherID(in.Topic, in.Channel)
-	nsqConfig := nsq.NewConfig()
-	nsqConfig.MaxInFlight = 100000
-	nsqConfig.MsgTimeout = 1 * time.Minute
-	nsqConfig.MaxAttempts = 10
-	f, err := NewFetcher(1, 100000, in.Topic, in.Channel, s.nsqlookups, nsqConfig)
-	if err != nil {
-		fmt.Println("NewFetcher error", err)
-		return nil, err
-	}
-	err = s.fetchers.SetNX(fid, f, 0)
-	if err == nil {
-		f.Start()
+	// nsqConfig := nsq.NewConfig()
+	// nsqConfig.MaxInFlight = 5000
+	// nsqConfig.MsgTimeout = 1 * time.Minute
+	// nsqConfig.MaxAttempts = 10
+	// f, err := NewFetcher(1, 5000, in.Topic, in.Channel, s.nsqlookups, nsqConfig)
+	// if err != nil {
+	// 	fmt.Println("NewFetcher error", err)
+	// 	return nil, err
+	// }
+	var fetcher interface{}
+
+	if s.fetchers.Exists(fid) {
+		f, err := s.fetchers.Get(fid)
+		if err != nil {
+			fmt.Println("Get Fetcher failed", err)
+			return nil, err
+		}
+		fetcher = f
+	} else {
+
+		nsqConfig := nsq.NewConfig()
+		nsqConfig.MaxInFlight = 7000
+		nsqConfig.MsgTimeout = 1 * time.Minute
+		nsqConfig.MaxAttempts = 10
+		f, err := NewFetcher(1, 7000, in.Topic, in.Channel, s.nsqlookups, nsqConfig)
+		if err != nil {
+			fmt.Println("NewFetcher error", err)
+			return nil, err
+		}
+		err = s.fetchers.SetNX(fid, f, 0)
+		if err == nil {
+			f.Start()
+		}
+		fetcher = f
+
 	}
 
-	fetcher, err := s.fetchers.Get(fid)
-	if err != nil {
-		fmt.Println("Get Fetcher failed", err)
-		return nil, err
-	}
+	// fetcher, err := s.fetchers.Get(fid)
+	// if err != nil {
+	// 	fmt.Println("Get Fetcher failed", err)
+	// 	return nil, err
+	// }
 	// fetch the msg
 	msg, err := fetcher.(Fetcher).Fetch()
 	if err != nil {
@@ -68,8 +91,11 @@ func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskRespo
 		return nil, err
 	}
 	msgID := msg.GetID().String()
+
+	//Use get msg state
+	infinish, infailed := s.finishedMsgs.Exist(msgID)
 	// The msg is in success state
-	if s.finishedMsgs.Exists(msgID) {
+	if infinish {
 		fmt.Println("message: " + msg.GetID() + " is finished")
 		// confirm the message directly
 		msg.Finish()
@@ -77,7 +103,7 @@ func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskRespo
 	}
 
 	// The msg is in failed state, retry
-	if s.failedMsgs.Exists(msgID) {
+	if infailed {
 		fmt.Println("message: " + msg.GetID() + "is failed, let us retry")
 		s.failedMsgs.Delete(string(msg.GetID()))
 	}
@@ -87,12 +113,13 @@ func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskRespo
 	// AddMsg to Timer
 
 	tick := func() bool {
-		if s.finishedMsgs.Exists(msgID) {
+		infinish, infailed := s.finishedMsgs.Exist(msgID)
+		if infinish {
 			msg.Finish()
 			fmt.Println("Tick Message, Found Finished", msgID)
 			return false
 		}
-		if s.failedMsgs.Exists(msgID) {
+		if infailed {
 			msg.Requeue(-1)
 			fmt.Println("Tick Message, Found Failed", msgID)
 			return false
@@ -130,27 +157,35 @@ func (s *server) FinTask(ctx context.Context, in *pb.FinTaskRequest) (*pb.FinTas
 	switch in.Result {
 	// If the result is success, take a radical approach
 	case pb.TaskResult_FIN:
-		err := s.finishedMsgs.Set(msgID, msg, -1)
+		err := s.finishedMsgs.SetAndDel(msgID, msg)
 		if err != nil {
-			fmt.Println("finishedMsgs.Set error: ", err)
 			return nil, err
 		}
-		err = s.failedMsgs.Delete(msgID)
-		if err != nil {
-			fmt.Println("failedMsgs.Set Delete: ", err)
-			return nil, err
-		}
+		// err := s.finishedMsgs.Set(msgID, msg, -1)
+		// if err != nil {
+		// 	fmt.Println("finishedMsgs.Set error: ", err)
+		// 	return nil, err
+		// }
+		// err = s.failedMsgs.Delete(msgID)
+		// if err != nil {
+		// 	fmt.Println("failedMsgs.Set Delete: ", err)
+		// 	return nil, err
+		// }
 		fmt.Println("Finish Task, ID: ", msgID)
 		break
 	case pb.TaskResult_FAIL:
 		fmt.Println("Failed Task, ID: ", msgID)
 		// Set the msg failed only if it is not in finished state
-		if s.finishedMsgs.Exists(msgID) == false {
-			err := s.failedMsgs.Set(msgID, msg, -1)
-			if err != nil {
-				fmt.Println("failedMsgs.Set error: ", err)
-				return nil, err
-			}
+		// if s.finishedMsgs.Exists(msgID) == false {
+		// 	err := s.failedMsgs.Set(msgID, msg, -1)
+		// 	if err != nil {
+		// 		fmt.Println("failedMsgs.Set error: ", err)
+		// 		return nil, err
+		// 	}
+		// }
+		err := s.finishedMsgs.ExistAndSet(msgID, msg)
+		if err != nil {
+			return nil, err
 		}
 		break
 	}
@@ -168,16 +203,16 @@ func NewServer(nsqlookups []string) pb.DispatcherServer {
 	redisPass := os.Getenv("REDIS_PASSWORD")
 	fmt.Println("redisAddr", redisAddr, redisPass)
 
-	opt := &redis.ClusterOptions{
-		Addrs:    []string{redisAddr},
-		Password: redisPass, // no password set
-	}
-
-	// opt := &redis.Options{
-	// 	Addr:     redisAddr,
-	// 	Password: redisPass,
-	// 	DB:       0,
+	// opt := &redis.ClusterOptions{
+	// 	Addrs:    []string{redisAddr},
+	// 	Password: redisPass, // no password set
 	// }
+
+	opt := &redis.Options{
+		Addr:     redisAddr,
+		Password: redisPass,
+		DB:       0,
+	}
 
 	s := &server{
 		fetchers:     NewInMemoryCache(),

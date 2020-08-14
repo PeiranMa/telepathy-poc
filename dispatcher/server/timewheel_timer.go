@@ -19,7 +19,7 @@ func (t *twTimer) tickItem(it *TimerItem) {
 	needed := it.Tick()
 	if time.Now().After(it.StartTime.Add(it.ExpireDuration)) {
 		it.Timeout()
-		return
+		goto exit
 	}
 
 	if needed {
@@ -27,6 +27,9 @@ func (t *twTimer) tickItem(it *TimerItem) {
 			t.tickItem(it)
 		})
 	}
+exit: //motify
+	t.Delete(it.ID)
+	return
 }
 
 func (t *twTimer) Add(it *TimerItem) bool {

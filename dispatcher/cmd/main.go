@@ -3,7 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
+	"runtime"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -18,6 +22,10 @@ var (
 )
 
 func main() {
+	runtime.SetBlockProfileRate(1)
+	go func() {
+		log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
+	}()
 	flag.Parse()
 	grpcServer := grpc.NewServer()
 	pb.RegisterDispatcherServer(grpcServer, server.NewServer(strings.Split(*lookupds, " ")))
