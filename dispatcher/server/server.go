@@ -63,10 +63,10 @@ func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskRespo
 	} else {
 
 		nsqConfig := nsq.NewConfig()
-		nsqConfig.MaxInFlight = 7000
+		nsqConfig.MaxInFlight = 100000
 		nsqConfig.MsgTimeout = 1 * time.Minute
 		nsqConfig.MaxAttempts = 10
-		f, err := NewFetcher(1, 7000, in.Topic, in.Channel, s.nsqlookups, nsqConfig)
+		f, err := NewFetcher(1, 20000, in.Topic, in.Channel, s.nsqlookups, nsqConfig)
 		if err != nil {
 			fmt.Println("NewFetcher error", err)
 			return nil, err
