@@ -7,6 +7,7 @@ import (
 	// "os"
 	// "time"
 	"github.com/go-redis/redis/v8"
+	"runtime"
 	// "reflect"
 )
 
@@ -18,7 +19,7 @@ func main() {
 		DB:       0,
 	}
 	rdb := redis.NewClient(opt)
-
+	fmt.Println(opt.MinIdleConns)
 	// testScript := redis.NewScript(`
 	// if redis.call("hexists", "finish", KEYS[1]) == 1  then	return 0 end return redis.call("hset","finish",KEYS[1],ARGV[1])
 	// `)
@@ -53,5 +54,6 @@ func main() {
 	`)
 	n, err := redisScript.Run(context.Background(), rdb, []string{"ma2"}, "yanis").Result()
 	fmt.Println(n, err)
+	fmt.Println(runtime.NumCPU())
 
 }

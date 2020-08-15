@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -23,9 +24,11 @@ type server struct {
 	pb.DispatcherServer
 	fetchers     Cache
 	finishedMsgs Cache
-	failedMsgs   Cache
-	msgTimer     Timer
-	nsqlookups   []string
+	// failedMsgs     Cache
+	msgTimer       Timer
+	nsqlookups     []string
+	fetcherBuf     int
+	nsqMaxInflight int
 }
 
 func getFetcherID(topic string, channel string) string {
@@ -63,10 +66,10 @@ func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskRespo
 	} else {
 
 		nsqConfig := nsq.NewConfig()
-		nsqConfig.MaxInFlight = 100000
+		nsqConfig.MaxInFlight = s.nsqMaxInflight
 		nsqConfig.MsgTimeout = 1 * time.Minute
 		nsqConfig.MaxAttempts = 10
-		f, err := NewFetcher(1, 20000, in.Topic, in.Channel, s.nsqlookups, nsqConfig)
+		f, err := NewFetcher(1, s.fetcherBuf, in.Topic, in.Channel, s.nsqlookups, nsqConfig)
 		if err != nil {
 			fmt.Println("NewFetcher error", err)
 			return nil, err
@@ -105,7 +108,7 @@ func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskRespo
 	// The msg is in failed state, retry
 	if infailed {
 		fmt.Println("message: " + msg.GetID() + "is failed, let us retry")
-		s.failedMsgs.Delete(string(msg.GetID()))
+		s.finishedMsgs.Delete(string(msg.GetID()))
 	}
 	// refresh msg directly
 	msg.Touch()
@@ -193,7 +196,7 @@ func (s *server) FinTask(ctx context.Context, in *pb.FinTaskRequest) (*pb.FinTas
 
 }
 
-func NewServer(nsqlookups []string) pb.DispatcherServer {
+func NewServer(nsqlookups []string, fetcherBuf int, nsqMaxInflight int, poolSize int, minIdleConns int) pb.DispatcherServer {
 
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
@@ -203,23 +206,31 @@ func NewServer(nsqlookups []string) pb.DispatcherServer {
 	redisPass := os.Getenv("REDIS_PASSWORD")
 	fmt.Println("redisAddr", redisAddr, redisPass)
 
+	if poolSize == 0 {
+		poolSize = runtime.NumCPU() * 10
+	}
+
 	// opt := &redis.ClusterOptions{
 	// 	Addrs:    []string{redisAddr},
 	// 	Password: redisPass, // no password set
 	// }
 
 	opt := &redis.Options{
-		Addr:     redisAddr,
-		Password: redisPass,
-		DB:       0,
+		Addr:         redisAddr,
+		Password:     redisPass,
+		DB:           0,
+		PoolSize:     poolSize,
+		MinIdleConns: minIdleConns,
 	}
 
 	s := &server{
 		fetchers:     NewInMemoryCache(),
 		finishedMsgs: NewRedisCache("finish", opt),
-		failedMsgs:   NewRedisCache("failed", opt),
-		msgTimer:     NewTimingWheel(),
-		nsqlookups:   nsqlookups,
+		// failedMsgs:     NewRedisCache("failed", opt),
+		msgTimer:       NewTimingWheel(),
+		nsqlookups:     nsqlookups,
+		fetcherBuf:     fetcherBuf,
+		nsqMaxInflight: nsqMaxInflight,
 	}
 	return s
 
