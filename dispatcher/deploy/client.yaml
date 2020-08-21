@@ -6,7 +6,7 @@ metadata:
   labels:
     app: dispatcher-client
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: dispatcher-client
@@ -17,9 +17,9 @@ spec:
     spec:
       containers:
       - name: poc
-        image: r4aks.azurecr.io/dispatcher.performance.poc:v1.9
+        image: r4aks.azurecr.io/dispatcher.performance.poc:v2.7
         command: ["/go/bin/client"]
-        args: ["-s", "dispatcher:50051", "-nsqd", "nsqd:4150", "-runfor", "40s", "-r", "10", "-c", "10"]
+        args: ["-s", "dispatcher:50051", "-nsqd", "nsqd:4150", "-runfor", "60s", "-r", "10", "-c", "10"]
         ports:
         resources:
           requests:

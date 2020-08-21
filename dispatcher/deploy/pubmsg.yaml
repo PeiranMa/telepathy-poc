@@ -6,7 +6,7 @@ metadata:
   labels:
     app: pub-msg
 spec:
-  replicas: 1
+  replicas: 4
   selector:
     matchLabels:
       app: pub-msg
@@ -19,7 +19,7 @@ spec:
       - name: poc
         image: r4aks.azurecr.io/dispatcher.performance.poc:v1.2
         command: ["/go/bin/client"]
-        args: ["-s", "dispatcher:50051", "-nsqd", "nsqd:4150", "-runfor", "5m", "-r", "10", "-c", "10", "-p", "1"]
+        args: ["-s", "dispatcher:50051", "-nsqd", "nsqd:4150", "-runfor", "20m", "-r", "10", "-c", "10", "-p", "1"]
         ports:
         resources:
           requests:

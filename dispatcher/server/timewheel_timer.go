@@ -23,7 +23,7 @@ func (t *twTimer) tickItem(it *TimerItem) {
 	}
 
 	if needed {
-		t.tw.AfterFunc(it.TickDuration, func() {
+		t.timers[it.ID] = t.tw.AfterFunc(it.TickDuration, func() {
 			t.tickItem(it)
 		})
 	}

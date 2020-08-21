@@ -19,4 +19,6 @@ secret.yaml
 
 /dispatcher/deploy/secret.yaml
 /dispatcher/test
-
+/dispatcher/server/server_old
+/dispatcher/server/server_new
+/dispatcher/server/server_old_without_logs

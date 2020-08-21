@@ -44,9 +44,9 @@ spec:
     spec:
       containers:
       - name: poc
-        image: r4aks.azurecr.io/dispatcher.performance.poc:v1.9
+        image: r4aks.azurecr.io/dispatcher.performance.poc:v2.7
         command: ["/go/bin/cmd"]
-        args: ["-lookupd", "nsqlookupd-0.nsqlookupd:4161 nsqlookupd-1.nsqlookupd:4161 nsqlookupd-2.nsqlookupd:4161", "-p", "50051", "-b", "25000", "-maxinflight", "60000", "-poolsize", "1600", "-idlesize", "0"]
+        args: ["-lookupd", "nsqlookupd-0.nsqlookupd:4161 nsqlookupd-1.nsqlookupd:4161 nsqlookupd-2.nsqlookupd:4161", "-p", "50051", "-b", "10000", "-maxinflight", "20000", "-poolsize", "0", "-idlesize", "0","-workernums","10","-batchnums","20","-cn","5"]
         ports:
         - containerPort: 50051
         - containerPort: 6060

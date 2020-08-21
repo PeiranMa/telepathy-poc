@@ -8,7 +8,7 @@ import (
 )
 
 type Fetcher interface {
-	Start()
+	Start(int, int) error
 	Fetch() (Message, error)
 }
 
@@ -45,19 +45,38 @@ func (f *nsqFetcher) HandleMessage(m *nsq.Message) error {
 		// Returning nil will automatically send a FIN command to NSQ to mark the message as processed.
 		return nil
 	}
+	// nsq.NewMessage(id nsq.MessageID, body []byte)
 	m.DisableAutoResponse()
 	message := NewNsqMessage(f.topic, f.channel, m)
 	f.msgCh <- message
 	return nil
 }
 
-func (f *nsqFetcher) Start() {
-	for _, c := range f.consumers {
+func (f *nsqFetcher) Start(parallel int, nsqMaxInflight int) error {
+
+	nsqConfig := nsq.NewConfig()
+	nsqConfig.MaxInFlight = nsqMaxInflight
+	nsqConfig.MsgTimeout = 1 * time.Minute
+	nsqConfig.MaxAttempts = 10
+	nsqConfig.LowRdyIdleTimeout = 1 * time.Minute
+	for i := 0; i < parallel; i++ {
+		c, err := nsq.NewConsumer(f.topic, f.channel, nsqConfig)
+		if err != nil {
+			return err
+
+		}
+		c.AddHandler(f)
+		f.consumers = append(f.consumers, c)
 		c.ConnectToNSQLookupds(f.lookupds)
 	}
+	return nil
+
+	// for _, c := range f.consumers {
+	// 	c.ConnectToNSQLookupds(f.lookupds)
+	// }
 }
 
-func NewFetcher(parallel int, bufferCnt int, topic string, channel string, lookupds []string, config *nsq.Config) (Fetcher, error) {
+func NewFetcher(bufferCnt int, topic string, channel string, lookupds []string) Fetcher {
 
 	fetcher := &nsqFetcher{
 		msgCh:    make(chan Message, bufferCnt),
@@ -65,14 +84,14 @@ func NewFetcher(parallel int, bufferCnt int, topic string, channel string, looku
 		channel:  channel,
 		lookupds: lookupds,
 	}
-	for i := 0; i < parallel; i++ {
-		c, err := nsq.NewConsumer(topic, channel, config)
-		if err != nil {
-			return nil, err
+	// for i := 0; i < parallel; i++ {
+	// 	c, err := nsq.NewConsumer(topic, channel, config)
+	// 	if err != nil {
+	// 		return nil, err
 
-		}
-		c.AddHandler(fetcher)
-		fetcher.consumers = append(fetcher.consumers, c)
-	}
-	return fetcher, nil
+	// 	}
+	// 	c.AddHandler(fetcher)
+	// 	fetcher.consumers = append(fetcher.consumers, c)
+	// }
+	return fetcher
 }

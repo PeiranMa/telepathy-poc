@@ -116,3 +116,37 @@ func (rc *redisCache) ExistAndSet(key string, val interface{}) error {
 	}
 	return nil
 }
+
+func (rc *redisCache) BatchExist(keys []string) [][]bool {
+	if len(keys) == 0 {
+		return nil
+	}
+	redisScript := redis.NewScript(`
+	local batchResult = {}
+	for i = 1, table.getn(KEYS) do	
+	local infinish = redis.call("hexists", "finish", KEYS[i])
+	local infailed = redis.call("hexists", "failed", KEYS[i])
+	table.insert(batchResult,{infinish, infailed})
+	end
+	return batchResult
+	`)
+	res, err := redisScript.Run(context.Background(), rc.rdb, keys).Result()
+	if err != nil {
+		fmt.Println("Exist error : ", err)
+
+	}
+
+	Result := make([][]bool, len(keys))
+	for i := range Result {
+		Result[i] = make([]bool, 2)
+	}
+	if len(res.([]interface{})) != len(keys) {
+		panic("Batch Exist Error")
+	}
+	for i, va := range res.([]interface{}) {
+		Result[i][0] = va.([]interface{})[0].(int64) == 1
+		Result[i][1] = va.([]interface{})[1].(int64) == 1
+	}
+	return Result
+
+}

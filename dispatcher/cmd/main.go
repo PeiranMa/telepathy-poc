@@ -19,10 +19,13 @@ import (
 var (
 	lookupds         = flag.String("lookupd", "localhost:4161", "lookupd address, `<addr>:<port> <addr>:<port>`")
 	port             = flag.String("p", "50051", "svc port")
-	fetcherBuf       = flag.Int("b", 20000, "fetcher buffer size")
-	nsqMaxInflight   = flag.Int("maxinflight", 20000, "nsq inflight message size")
+	fetcherBuf       = flag.Int("b", 10000, "fetcher buffer size")
+	nsqMaxInflight   = flag.Int("maxinflight", 50000, "nsq inflight message size")
 	redisPoolSize    = flag.Int("poolsize", 0, "max num of connections to redis, default 0 for runtime.NumCPU * 10")
 	minIdleConnsSize = flag.Int("idlesize", 0, "min num of idle connections to redis")
+	workerNum        = flag.Int("workernums", 100, "num of tickloop worker")
+	batchNum         = flag.Int("batchnums", 100, "num of batch size")
+	consumerNum      = flag.Int("cn", 1, "num of consumers")
 )
 
 func main() {
@@ -32,7 +35,7 @@ func main() {
 	}()
 	flag.Parse()
 	grpcServer := grpc.NewServer()
-	pb.RegisterDispatcherServer(grpcServer, server.NewServer(strings.Split(*lookupds, " "), *fetcherBuf, *nsqMaxInflight, *redisPoolSize, *minIdleConnsSize))
+	pb.RegisterDispatcherServer(grpcServer, server.NewServer(strings.Split(*lookupds, " "), *fetcherBuf, *nsqMaxInflight, *redisPoolSize, *minIdleConnsSize, *workerNum, *batchNum, *consumerNum))
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", *port))
 	if err != nil {
 		fmt.Println(err)
