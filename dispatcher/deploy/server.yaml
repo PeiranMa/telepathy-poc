@@ -11,21 +11,7 @@ spec:
   selector:
     app: dispatcher
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: dispatcher-pprof
-  labels:
-    app: dispatcher-pprof
-spec:
-  ports:
-  - port: 6060
-    targetPort: 6060
-  selector:
-    app: dispatcher 
-  type: LoadBalancer 
 
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,7 +19,7 @@ metadata:
   labels:
     app: dispatcher
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: dispatcher
@@ -44,12 +30,11 @@ spec:
     spec:
       containers:
       - name: poc
-        image: r4aks.azurecr.io/dispatcher.performance.poc:v2.7
+        image: r4aks.azurecr.io/dispatcher.poc.inmemory:v1.0
         command: ["/go/bin/cmd"]
-        args: ["-lookupd", "nsqlookupd-0.nsqlookupd:4161 nsqlookupd-1.nsqlookupd:4161 nsqlookupd-2.nsqlookupd:4161", "-p", "50051", "-b", "10000", "-maxinflight", "20000", "-poolsize", "0", "-idlesize", "0","-workernums","10","-batchnums","20","-cn","5"]
+        args: ["-lookupd", "nsqlookupd-0.nsqlookupd:4161 nsqlookupd-1.nsqlookupd:4161 nsqlookupd-2.nsqlookupd:4161", "-p", "50051"]
         ports:
         - containerPort: 50051
-        - containerPort: 6060
         resources:
           requests:
             cpu: "14" 

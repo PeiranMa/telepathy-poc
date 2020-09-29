@@ -1,97 +1,215 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/nsqio/go-nsq"
 )
 
 type Fetcher interface {
-	Start(int, int) error
+	Start() error
 	Fetch() (Message, error)
+	Stop() error
 }
 
 var (
-	NoMessageError = errors.New("No Message")
+	SESSION_QUEUE_CHANNEL = "SESSION_QUEUE_CHANNEL"
+	NoMessageError        = errors.New("No Message")
+	ReFreshTopicInterval  = 1 * time.Second
 )
 
-func getMessageID(topic string, channel string, msgID nsq.MessageID) string {
-	return topic + "." + channel + "." + string(msgID[:])
+func GetTopic(sessionId string, batchId string) string {
+	return sessionId + "." + batchId
 }
 
-type nsqFetcher struct {
-	Fetcher
-	consumers      []*nsq.Consumer
-	msgCh          chan Message
-	topic          string
-	channel        string
-	lookupds       []string
-	consumerConfig *nsq.Config
+type handler struct {
+	topic   string
+	channel string
+	ch      chan Message
+	timer   Timer
+	msgMgr  *msgMgr
 }
 
-func (f *nsqFetcher) Fetch() (Message, error) {
-	select {
-	case v := <-f.msgCh:
-		return v, nil
-	case <-time.After(time.Millisecond):
-		return nil, NoMessageError
-	}
-}
+func (h *handler) HandleMessage(m *nsq.Message) error {
 
-func (f *nsqFetcher) HandleMessage(m *nsq.Message) error {
-	//fmt.Println("handle message")
 	if len(m.Body) == 0 {
 		// Returning nil will automatically send a FIN command to NSQ to mark the message as processed.
 		return nil
 	}
-	// nsq.NewMessage(id nsq.MessageID, body []byte)
 	m.DisableAutoResponse()
-	message := NewNsqMessage(f.topic, f.channel, m)
-	f.msgCh <- message
+	message := NewNsqMessage(h.topic, h.channel, m)
+	h.msgMgr.Add(message)
+	h.ch <- message
 	return nil
 }
 
-func (f *nsqFetcher) Start(parallel int, nsqMaxInflight int) error {
+type nsqFetcher struct {
+	Fetcher
+	sessionId string
+	consumers map[string]*nsq.Consumer
+	conMtx    sync.Mutex
+	msgCh     chan Message
+	lookupds  []string
+	config    *nsqFetcherConfig
+	msgMgr    *msgMgr
+	rdb       *redis.ClusterClient
+	nsqConfig *nsq.Config
+	stopCh    chan int
+}
 
-	nsqConfig := nsq.NewConfig()
-	nsqConfig.MaxInFlight = nsqMaxInflight
-	nsqConfig.MsgTimeout = 1 * time.Minute
-	nsqConfig.MaxAttempts = 10
-	nsqConfig.LowRdyIdleTimeout = 1 * time.Minute
-	for i := 0; i < parallel; i++ {
-		c, err := nsq.NewConsumer(f.topic, f.channel, nsqConfig)
-		if err != nil {
-			return err
-
+func (f *nsqFetcher) Fetch() (Message, error) {
+	var msg Message
+	for {
+		select {
+		case msg = <-f.msgCh:
+			break
+		case <-time.After(f.config.WaitDurationIfNoMsg):
+			msg = nil
+			break
 		}
-		c.AddHandler(f)
-		f.consumers = append(f.consumers, c)
-		c.ConnectToNSQLookupds(f.lookupds)
+		if msg == nil {
+			return nil, NoMessageError
+		}
+		_, ok := f.msgMgr.GetState(msg)
+		if !ok {
+			return msg, nil
+		}
 	}
-	return nil
 
-	// for _, c := range f.consumers {
-	// 	c.ConnectToNSQLookupds(f.lookupds)
-	// }
 }
 
-func NewFetcher(bufferCnt int, topic string, channel string, lookupds []string) Fetcher {
+func (f *nsqFetcher) Start() error {
+
+	f.nsqConfig = nsq.NewConfig()
+	f.nsqConfig.MaxInFlight = f.config.MaxInFlight
+	f.nsqConfig.MsgTimeout = f.config.MsgTimeout
+	f.nsqConfig.MaxAttempts = f.config.MaxAttempts
+
+	f.initRedisClient()
+
+	f.refreshTopics()
+
+	go func() {
+		ticker := time.NewTicker(ReFreshTopicInterval)
+		for {
+			select {
+			case <-f.stopCh:
+				ticker.Stop()
+			case <-ticker.C:
+				f.refreshTopics()
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (f *nsqFetcher) Stop() error {
+	close(f.stopCh)
+	var wg sync.WaitGroup
+	for _, consumer := range f.consumers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			consumer.Stop()
+		}()
+
+	}
+	wg.Wait()
+	return nil
+}
+
+func (f *nsqFetcher) initRedisClient() {
+	opt := &redis.ClusterOptions{
+		Addrs:    EnvGetRedisAddrs(),
+		Password: EnvGetRedisPass(), // no password set
+	}
+	f.rdb = redis.NewClusterClient(opt)
+}
+
+func (f *nsqFetcher) refreshTopics() {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+	cmd := f.rdb.SMembers(ctx, SessionBatchKey(f.sessionId))
+	batches, err := cmd.Result()
+	if err != nil {
+		return
+	}
+	newTopics := make(map[string]string)
+	for _, batch := range batches {
+		newTopics[GetTopic(f.sessionId, batch)] = GetTopic(f.sessionId, batch)
+	}
+
+	var wg sync.WaitGroup
+	// delete out-dated topic
+	for topic, consumer := range f.consumers {
+		if _, ok := newTopics[topic]; !ok {
+			wg.Add(1)
+			go func() {
+				consumer.Stop()
+				wg.Done()
+			}()
+			delete(f.consumers, topic)
+		}
+	}
+	// add new topic
+	for newTopic := range newTopics {
+		if _, ok := f.consumers[newTopic]; !ok {
+			c, err := nsq.NewConsumer(newTopic, SESSION_QUEUE_CHANNEL, f.nsqConfig)
+			if err != nil {
+				fmt.Println("Error refreshConsumers", newTopic, err)
+				continue
+			}
+			h := &handler{
+				topic:   newTopic,
+				channel: SESSION_QUEUE_CHANNEL,
+				ch:      f.msgCh,
+				msgMgr:  f.msgMgr,
+			}
+			c.AddHandler(h)
+			f.consumers[newTopic] = c
+			c.ConnectToNSQLookupds(f.lookupds)
+		}
+	}
+	wg.Wait()
+
+}
+
+type nsqFetcherConfig struct {
+	MaxInFlight         int
+	MsgTimeout          time.Duration
+	MaxAttempts         uint16
+	BufferLen           int
+	WaitDurationIfNoMsg time.Duration
+}
+
+func NewNsqFetcherConfig() *nsqFetcherConfig {
+	c := &nsqFetcherConfig{
+		MaxInFlight:         10000,
+		MsgTimeout:          60 * time.Second,
+		MaxAttempts:         10,
+		BufferLen:           20000,
+		WaitDurationIfNoMsg: 1 * time.Second,
+	}
+	return c
+}
+
+func NewNsqFetcher(sessionId string, config *nsqFetcherConfig) (Fetcher, error) {
 
 	fetcher := &nsqFetcher{
-		msgCh:    make(chan Message, bufferCnt),
-		topic:    topic,
-		channel:  channel,
-		lookupds: lookupds,
+		msgCh:     make(chan Message, config.BufferLen),
+		sessionId: sessionId,
+		config:    config,
+		msgMgr:    newMgr(sessionId),
+		lookupds:  EnvGetLookupds(),
+		stopCh:    make(chan int),
+		consumers: make(map[string]*nsq.Consumer),
 	}
-	// for i := 0; i < parallel; i++ {
-	// 	c, err := nsq.NewConsumer(topic, channel, config)
-	// 	if err != nil {
-	// 		return nil, err
 
-	// 	}
-	// 	c.AddHandler(fetcher)
-	// 	fetcher.consumers = append(fetcher.consumers, c)
-	// }
-	return fetcher
+	return fetcher, nil
 }

@@ -19,24 +19,6 @@ type Cache interface {
 	Delete(string) error
 	SetNX(string, interface{}, time.Duration) error
 	Exists(string) bool
-
-	Exist(string) (bool, bool)
-	SetAndDel(string, interface{}) error
-	ExistAndSet(string, interface{}) error
-	BatchExist([]string) [][]bool
-}
-
-func (mc *memoryCache) Exist(str string) (bool, bool) {
-	return true, true
-}
-func (mc *memoryCache) SetAndDel(str string, val interface{}) error {
-	return nil
-}
-func (mc *memoryCache) ExistAndSet(str string, val interface{}) error {
-	return nil
-}
-func (mc *memoryCache) BatchExist(strs []string) [][]bool {
-	return nil
 }
 
 type memoryCache struct {

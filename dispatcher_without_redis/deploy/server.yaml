@@ -1,0 +1,350 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dispatcher
+  labels:
+    app: dispatcher
+spec:
+  ports:
+  - port: 50051
+    targetPort: 50051
+  selector:
+    app: dispatcher
+
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dispatcher-pprof
+  labels:
+    app: dispatcher-pprof
+spec:
+  ports:
+  - port: 6060
+    targetPort: 6060
+  selector:
+    app: dispatcher 
+  type: LoadBalancer 
+
+# ---
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: dispatcher
+#   labels:
+#     app: dispatcher
+# spec:
+#   replicas: 1
+#   selector:
+#     matchLabels:
+#       app: dispatcher
+#   template:
+#     metadata:
+#       labels:
+#         app: dispatcher
+#     spec:
+#       containers:
+#       - name: poc
+#         image: r4aks.azurecr.io/dispatcher.performance.poc:v4.0
+#         command: ["/go/bin/cmd"]
+#         args: ["-lookupd", "nsqlookupd-0.nsqlookupd:4161 nsqlookupd-1.nsqlookupd:4161 nsqlookupd-2.nsqlookupd:4161", "-nsqdaddr","nsqd:4150","-p", "50051", "-b", "30000", "-maxinflight", "50000","-cn","2","-pn","9","-batch-size","100"]
+#         ports:
+#         - containerPort: 50051
+#         - containerPort: 6060
+#         resources:
+#           requests:
+#             cpu: "14" 
+#             memory: "16Gi" 
+      
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nsqlookupd-dispatcher
+  labels:
+    app: nsq-dispatcher
+spec:
+  ports:
+  - port: 4160
+    targetPort: 4160
+    name: tcp
+  - port: 4161
+    targetPort: 4161
+    name: http
+  publishNotReadyAddresses: true
+  clusterIP: None
+  selector:
+    app: nsq-dispatcher
+    component: nsqlookupd-dispatcher
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: nsqd-dispatcher
+#   labels:
+#     app: nsq-dispatcher
+# spec:
+#   ports:
+#   - port: 4150
+#     targetPort: 4150
+#     name: tcp
+#   - port: 4151
+#     targetPort: 4151
+#     name: http
+#   selector:
+#     app: nsq-dispatcher
+#     component: nsqd-dispatcher
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nsqadmin-dispatcher
+  labels:
+    app: nsq-dispatcher
+spec:
+  ports:
+  - port: 4170
+    targetPort: 4170
+    name: tcp
+  - port: 4171
+    targetPort: 4171
+    name: http
+  selector:
+    app: nsq-dispatcher
+    component: nsqadmin-dispatcher
+  type: LoadBalancer 
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nsqadmin-dispatcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nsq-dispatcher
+      component: nsqadmin-dispatcher
+  template:
+    metadata:
+      labels:
+        app: nsq-dispatcher
+        component: nsqadmin-dispatcher
+    spec:
+      containers:
+      - name: nsqadmin-dispatcher
+        image: nsqio/nsq:v1.1.0
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 1
+            memory: 64Mi
+        ports:
+        - containerPort: 4170
+          name: tcp
+        - containerPort: 4171
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: http
+          initialDelaySeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: http
+          initialDelaySeconds: 5
+        command:
+          - /nsqadmin
+          - -lookupd-http-address
+          - nsqlookupd-dispatcher-0.nsqlookupd-dispatcher:4161
+          - -lookupd-http-address
+          - nsqlookupd-dispatcher-1.nsqlookupd-dispatcher:4161
+          - -lookupd-http-address
+          - nsqlookupd-dispatcher-2.nsqlookupd-dispatcher:4161
+      terminationGracePeriodSeconds: 5
+
+
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nsqlookupd-dispatcher
+spec:
+  serviceName: "nsqlookupd-dispatcher"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nsq-dispatcher
+      component: nsqlookupd-dispatcher
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: nsq-dispatcher
+        component: nsqlookupd-dispatcher
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - nsq-dispatcher
+              - key: component
+                operator: In
+                values:
+                - nsqlookupd-dispatcher
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: nsqlookupd-dispatcher
+        image: nsqio/nsq:v1.1.0
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 3
+            memory: 1Gi
+        ports:
+        - containerPort: 4160
+          name: tcp
+        - containerPort: 4161
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: http
+          initialDelaySeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: http
+          initialDelaySeconds: 2
+        command:
+          - /nsqlookupd
+      terminationGracePeriodSeconds: 5
+
+
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dispatcher
+spec:
+  serviceName: "dispatcher"
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dispatcher
+      component: dispatcher
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: dispatcher
+        component: dispatcher
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - dispatcher
+              - key: component
+                operator: In
+                values:
+                - dispatcher
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: dispatcher
+        image: r4aks.azurecr.io/dispatcher.performance.poc:v4.1
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: "11"
+            memory: "8Gi"
+        ports:
+        - containerPort: 50051
+          name: tcp
+        - containerPort: 6060
+          name: http
+        command: ["/go/bin/cmd"]
+        args: ["-servername", $(HOSTNAME),"-lookupd", "nsqlookupd-0.nsqlookupd:4161 nsqlookupd-1.nsqlookupd:4161 nsqlookupd-2.nsqlookupd:4161", "-lookupd-d","nsqlookupd-dispatcher-0.nsqlookupd-dispatcher:4161 nsqlookupd-dispatcher-1.nsqlookupd-dispatcher:4161 nsqlookupd-dispatcher-2.nsqlookupd-dispatcher:4161","-nsqdaddr","localhost:4150","-p", "50051", "-b", "30000", "-maxinflight", "50000","-cn","2","-pn","9","-batch-size","100"]
+        env:
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+
+      - name: nsqd
+        image: nsqio/nsq:v1.1.0
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: "3"
+            memory: "1Gi"
+        ports:
+        - containerPort: 4150
+          name: tcp
+        - containerPort: 4151
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: http
+          initialDelaySeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: http
+          initialDelaySeconds: 2
+        volumeMounts:
+        - name: datadir-d
+          mountPath: /data
+        command:
+          - /nsqd
+          - -data-path
+          - /data
+          - -lookupd-tcp-address
+          - nsqlookupd-dispatcher-0.nsqlookupd-dispatcher:4160
+          - -lookupd-tcp-address
+          - nsqlookupd-dispatcher-1.nsqlookupd-dispatcher:4160
+          - -lookupd-tcp-address
+          - nsqlookupd-dispatcher-2.nsqlookupd-dispatcher:4160
+          - -broadcast-address
+          - $(HOSTNAME).dispatcher
+          - -mem-queue-size
+          - "1000000"
+          - -max-rdy-count
+          - "100000"
+        env:
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      terminationGracePeriodSeconds: 5
+      volumes:
+      - name: datadir-d
+        persistentVolumeClaim:
+          claimName: datadir-d
+  volumeClaimTemplates:
+  - metadata:
+      name: datadir-d
+    spec:
+      accessModes:
+        - "ReadWriteOnce"
+      storageClassName: managed-premium
+      resources:
+        requests:
+          storage: 10Gi
+        

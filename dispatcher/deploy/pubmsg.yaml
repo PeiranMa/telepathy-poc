@@ -6,7 +6,7 @@ metadata:
   labels:
     app: pub-msg
 spec:
-  replicas: 4
+  replicas: 20
   selector:
     matchLabels:
       app: pub-msg
@@ -17,13 +17,24 @@ spec:
     spec:
       containers:
       - name: poc
-        image: r4aks.azurecr.io/dispatcher.performance.poc:v1.2
+        image: r4aks.azurecr.io/dispatcher.performance.poc:v5.1
         command: ["/go/bin/client"]
-        args: ["-s", "dispatcher:50051", "-nsqd", "nsqd:4150", "-runfor", "20m", "-r", "10", "-c", "10", "-p", "1"]
+        args: ["-s", "dispatcher:50051", "-nsqd", "nsqd:4150", "-runfor", "20m", "-r", "10", "-c", "10", "-snum","10","-p", "1"]
         ports:
         resources:
           requests:
             cpu: "3" 
-            memory: "12Gi"        
+            memory: "12Gi"  
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis
+              key: password
+        - name: REDIS_ADDR
+          value: "telepathy.redis.cache.windows.net:6379"
+    
+   
+
 
         

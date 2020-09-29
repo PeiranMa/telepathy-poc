@@ -1,0 +1,319 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	// "os"
+	// "runtime"
+	// "strings"
+	"sync"
+	// "time"
+
+	// "github.com/go-redis/redis/v8"
+	"github.com/nsqio/go-nsq"
+	pb "poc.dispatcher/protos"
+)
+
+var (
+
+	// errors
+	TaskAlreadyInWorkingState = errors.New("TaskAlreadyInWorkingState")
+	TaskAlreadyFinished       = errors.New("TaskAlreadyFinished")
+)
+
+type server struct {
+	pb.DispatcherServer
+	serverName          string
+	fetchers            Cache
+	results             Cache
+	finishMsgs          Cache // general state
+	failedMsgs          Cache // general state
+	processMsgs         Cache // general state
+	msgDispatched       Cache // local state, message has been dispatched but not confirm
+	fetcherNsqlookups   []string
+	responserNsqlookups []string
+	publisherNsqd       string
+	fetcherBuf          int
+	nsqMaxInflight      int
+	consumerNum         int
+	publisher           Publisher
+	responser           Responser
+	responseCh          chan *nsq.Message
+	mux                 sync.Mutex
+}
+
+func getFetcherID(topic string, channel string) string {
+	return topic + "." + channel
+}
+
+func getMessageState(msg string) (string, string) {
+	tmp := strings.Split(msg, ".")
+	if len(tmp) != 4 {
+		panic("can't get message state")
+	}
+	return strings.Join(tmp[0:3], "."), tmp[3]
+}
+
+func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskResponse, error) {
+	// start := time.Now()
+	// defer func() {
+	// 	fmt.Println("GetTask Cost", time.Now().Sub(start))
+	// }()
+
+	// Fetch msg from Fetcher
+	// If exists, put it into `working_msg` cache.
+
+	fid := getFetcherID(in.Topic, in.Channel)
+	var fetcher interface{}
+	if s.fetchers.Exists(fid) {
+		f, err := s.fetchers.Get(fid)
+		if err != nil {
+			fmt.Println("Get Fetcher failed", err)
+			return nil, err
+		}
+		fetcher = f
+	} else {
+		f := NewFetcher(s.fetcherBuf, in.Topic, in.Channel, s.fetcherNsqlookups)
+		err := s.fetchers.SetNX(fid, f, 0)
+		if err == nil {
+			err = f.Start(s.consumerNum, s.nsqMaxInflight)
+			if err != nil {
+				fmt.Println("Fetcher Start error", err)
+				return nil, err
+			}
+		}
+		fetcher = f
+
+	}
+
+	// fetch the msg
+	msg, err := fetcher.(Fetcher).Fetch()
+
+	if err != nil {
+		// fmt.Println("Fetch msg Failed, reason: ", err)
+		return nil, err
+	}
+	msgID := msg.GetID().String()
+
+	//Use get msg state
+	// The msg is in success state
+
+	if s.finishMsgs.Exists(msgID) {
+		fmt.Println("Message already finish")
+		msg.Finish()
+
+		return nil, TaskAlreadyFinished
+	}
+	if s.processMsgs.Exists(msgID) {
+		fmt.Println("Message is processing")
+		msg.Touch()
+		return nil, TaskAlreadyInWorkingState
+	}
+	if s.failedMsgs.Exists(msgID) {
+		fmt.Println("Message is failed, try again")
+		err := s.processMsgs.SetNX(msgID, struct{}{}, -1)
+		if err != nil {
+			fmt.Println("Message already process")
+			return nil, TaskAlreadyInWorkingState
+		}
+		s.failedMsgs.Delete(msgID)
+	}
+
+	err = s.publisher.Publish("sync", msgID+".process")
+	if err != nil {
+		panic("Can't publish process message" + err.Error())
+	}
+	fmt.Println("message: " + msgID + " start working")
+	err = s.msgDispatched.SetNX(msgID, msg, -1)
+	if err != nil {
+		fmt.Println("Message has already been dispatched")
+	}
+	resp := &pb.TaskResponse{Payload: msg.GetPayload(), MessageID: []byte(msgID)}
+	return resp, nil
+}
+
+func (s *server) FinTask(ctx context.Context, in *pb.FinTaskRequest) (*pb.FinTaskResponse, error) {
+	// start := time.Now()
+	// defer func() {
+	// 	fmt.Println("FinTask Cost", time.Now().Sub(start))
+	// }()
+	// TODO: transaction between caches
+
+	msgID := string(in.MessageID)
+	msg := NewMessage(msgID, in.Payload, -1)
+
+	switch in.Result {
+	// If the result is success, take a radical approach
+	case pb.TaskResult_FIN:
+
+		err := s.finishMsgs.SetNX(msgID, struct{}{}, -1)
+		if err != nil {
+			fmt.Println("Message already finish : ", err)
+			break
+		}
+		//confirm the messag
+		if val, err := s.msgDispatched.Get(msgID); err == nil {
+			val.(Message).Finish()
+			s.msgDispatched.Delete(msgID)
+		}
+		s.results.Set(msgID, msg, -1)
+		s.processMsgs.Delete(msgID)
+		s.failedMsgs.Delete(msgID)
+
+		err = s.publisher.Publish("sync", msgID+".finish")
+		if err != nil {
+			panic("Can't publish finish message" + err.Error())
+		}
+
+		fmt.Println("Finish Task, ID: ", msgID)
+
+		// err := s.finishedMsgs.Set(msgID, msg, -1)
+		// if err != nil {
+		// 	fmt.Println("finishedMsgs.Set error: ", err)
+		// 	return nil, err
+		// }
+		// err = s.failedMsgs.Delete(msgID)
+		// if err != nil {
+		// 	fmt.Println("failedMsgs.Set Delete: ", err)
+		// 	return nil, err
+		// }
+		// fmt.Println("Finish Task, ID: ", msgID)
+		break
+	case pb.TaskResult_FAIL:
+
+		// Set the msg failed only if it is not in finished state
+		// if s.finishedMsgs.Exists(msgID) == false {
+		// 	err := s.failedMsgs.Set(msgID, msg, -1)
+		// 	if err != nil {
+		// 		fmt.Println("failedMsgs.Set error: ", err)
+		// 		return nil, err
+		// 	}
+		// }
+		fmt.Println("Failed Task, ID: ", msgID)
+		if s.finishMsgs.Exists(msgID) == false {
+			err := s.failedMsgs.SetNX(msgID, struct{}{}, -1)
+			if err != nil {
+				fmt.Println("message already failed")
+				break
+			}
+			s.processMsgs.Delete(msgID)
+			err = s.publisher.Publish("sync", msgID+".failed")
+			if err != nil {
+				panic("Can't publish failed message" + err.Error())
+			}
+
+		}
+
+		break
+	}
+	return &pb.FinTaskResponse{}, nil
+}
+
+func (s *server) getResponceLoop() {
+	go func() {
+		for {
+			select {
+			case msg := <-s.responseCh:
+				msgID, state := getMessageState(string(msg.Body))
+				if s.finishMsgs.Exists(msgID) {
+					fmt.Println("Message already finish")
+					continue
+				}
+				if s.processMsgs.Exists(msgID) {
+					if state == "finish" {
+						err := s.finishMsgs.SetNX(msgID, struct{}{}, -1)
+						if err != nil {
+							fmt.Println("Message already finish")
+							continue
+						}
+						s.processMsgs.Delete(msgID)
+						if val, err := s.msgDispatched.Get(msgID); err == nil {
+							val.(Message).Finish()
+							s.msgDispatched.Delete(msgID)
+						}
+						continue
+					}
+					if state == "failed" {
+						err := s.failedMsgs.SetNX(msgID, struct{}{}, -1)
+						if err != nil {
+							fmt.Println("Message already failed")
+							continue
+						}
+						s.processMsgs.Delete(msgID)
+						if val, err := s.msgDispatched.Get(msgID); err == nil {
+							val.(Message).Requeue(-1)
+							s.msgDispatched.Delete(msgID)
+						}
+						continue
+					}
+					continue
+				}
+				if s.failedMsgs.Exists(msgID) {
+					if state == "finish" {
+						err := s.finishMsgs.SetNX(msgID, struct{}{}, -1)
+						if err != nil {
+							fmt.Println("Message already finish")
+							continue
+						}
+						s.failedMsgs.Delete(msgID)
+						if val, err := s.msgDispatched.Get(msgID); err == nil {
+							val.(Message).Finish()
+							s.msgDispatched.Delete(msgID)
+						}
+						continue
+					}
+					if state == "process" {
+						err := s.processMsgs.SetNX(msgID, struct{}{}, -1)
+						if err != nil {
+							fmt.Println("Message already process")
+							continue
+						}
+						s.failedMsgs.Delete(msgID)
+						continue
+					}
+					continue
+
+				}
+
+			}
+		}
+
+	}()
+
+}
+
+func NewServer(serverName string, fetcherNsqlookups []string, responserNsqlookups []string, publisherNsqd string, fetcherBuf int, nsqMaxInflight int, publisherProducerNum int, fetcherConsumerNum int, responserConsumerNum int) pb.DispatcherServer {
+
+	s := &server{
+		serverName:          serverName,
+		fetchers:            NewInMemoryCache(),
+		results:             NewInMemoryCache(),
+		finishMsgs:          NewInMemoryCache(),
+		failedMsgs:          NewInMemoryCache(),
+		processMsgs:         NewInMemoryCache(),
+		msgDispatched:       NewInMemoryCache(),
+		fetcherNsqlookups:   fetcherNsqlookups,
+		responserNsqlookups: responserNsqlookups,
+		publisherNsqd:       publisherNsqd,
+		fetcherBuf:          fetcherBuf,
+		nsqMaxInflight:      nsqMaxInflight,
+		// publisherProducerNum: publisherProducerNum,
+
+		consumerNum: fetcherConsumerNum,
+		// responserConsumerNum: responserConsumerNum,
+		// publisher: NewPublisher("sync", publisherNsqd),
+		// responser : NewResponser("sync",  s.serverName,  []string, msgCh chan *nsq.Message),
+
+		responseCh: make(chan *nsq.Message),
+	}
+	s.publisher = NewPublisher("sync", publisherNsqd)
+	s.responser = NewResponser("sync ", s.serverName, responserNsqlookups, s.responseCh)
+	s.publisher.Start(1)
+	s.responser.Start(1, s.nsqMaxInflight)
+	s.getResponceLoop()
+
+	return s
+
+}
