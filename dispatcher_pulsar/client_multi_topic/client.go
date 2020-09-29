@@ -25,7 +25,7 @@ var (
 	numRPC      = flag.Int("r", 10, "number of concurrent RPCs on each connection.")
 	produceMsg  = flag.Bool("p", false, "produceMsg mode, default false")
 	pulsarProxy = flag.String("addr", "pulsar-proxy", "address of pulsar-proxy")
-	numTopic    = flag.Int("nt", 1, "number of topic")
+	numTopic    = flag.Int("nt", 1, "number of topics")
 
 	wg     sync.WaitGroup
 	cnts   = int32(0)
@@ -61,8 +61,8 @@ func runWithConn() {
 				// ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				// defer cancel()
 				t := time.Now()
-
-				resp, err := client.GetTask(context.Background(), &pb.TaskRequest{Topic: *topic, Channel: *channel + strconv.Itoa(i)})
+				multi_topic := *topic + "-" + strconv.Itoa(int(t.Unix())%*numTopic)
+				resp, err := client.GetTask(context.Background(), &pb.TaskRequest{Topic: multi_topic, Channel: *channel + strconv.Itoa(i)})
 				fmt.Println("GetTask cost", time.Since(t))
 				if err != nil {
 					fmt.Println("GetTask failed, error: ", err)
@@ -78,7 +78,7 @@ func runWithConn() {
 				// time.Sleep(1 * time.Second)
 				t = time.Now()
 				_, err = client.FinTask(context.Background(), &pb.FinTaskRequest{
-					Topic:     *topic,
+					Topic:     multi_topic,
 					Channel:   *channel,
 					Result:    pb.TaskResult_FIN,
 					MessageID: resp.MessageID})
@@ -117,19 +117,21 @@ func produceWork() {
 		log.Fatal(err)
 	}
 	defer client.Close()
-
-	producer, err := client.CreateProducer(pulsar.ProducerOptions{
-		Topic:                   *topic,
-		MaxPendingMessages:      1000,
-		BatchingMaxPublishDelay: time.Millisecond * time.Duration(1),
-		BatchingMaxSize:         uint(128 * 1024),
-		// DisableBatching: true,
-	})
-	if err != nil {
-		log.Fatal(err)
+	var producers []pulsar.Producer
+	for i := 0; i < *numTopic; i++ {
+		producer, err := client.CreateProducer(pulsar.ProducerOptions{
+			Topic:                   *topic + "-" + strconv.Itoa(i),
+			MaxPendingMessages:      1000,
+			BatchingMaxPublishDelay: time.Millisecond * time.Duration(1),
+			BatchingMaxSize:         uint(128 * 1024),
+			// DisableBatching: true,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		producers = append(producers, producer)
+		defer producer.Close()
 	}
-	defer producer.Close()
-
 	ctx := context.Background()
 
 	payload := make([]byte, 100)
@@ -146,8 +148,7 @@ func produceWork() {
 			}
 
 			start := time.Now()
-
-			producer.SendAsync(ctx, &pulsar.ProducerMessage{
+			producers[int(start.Unix())%*numTopic].SendAsync(ctx, &pulsar.ProducerMessage{
 				Payload: payload,
 			}, func(msgID pulsar.MessageID, message *pulsar.ProducerMessage, e error) {
 				if e != nil {

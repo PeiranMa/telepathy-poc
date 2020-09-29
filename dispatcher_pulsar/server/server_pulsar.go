@@ -107,17 +107,13 @@ func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskRespo
 	}
 
 	// fetch the msg
-	// fmt.Println("Before Fetch", in.Channel)
 	cMsg, err := f.Fetch()
-	// fmt.Println("After Fetch", in.Channel)
 	if err != nil {
 		return nil, err
 	}
 	msg := cMsg.Message
 	msgID := msg.ID().Serialize()
-	// fmt.Println("Before SetDiff", in.Channel)
 	err = s.msgStates.SetDiff(string(msgID), "process", -1)
-	// fmt.Println("After SetDiff", in.Channel)
 	if err != nil {
 		if err == TaskAlreadyFinished {
 			s.println("Message already finish", in.Channel)
@@ -129,9 +125,7 @@ func (s *server) GetTask(ctx context.Context, in *pb.TaskRequest) (*pb.TaskRespo
 		}
 
 	}
-	// fmt.Println("Before Publish", in.Channel)
 	s.publisher.Publish(append(msgID, process))
-	// fmt.Println("After Publish", in.Channel)
 	resp := &pb.TaskResponse{Payload: msg.Payload(), MessageID: msgID}
 	return resp, nil
 

@@ -51,6 +51,17 @@ func (f *pulsarFetcher) Fetch() (*pulsar.ConsumerMessage, error) {
 }
 
 func (f *pulsarFetcher) Start(parallel int) error {
+
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		for {
+			select {
+			case <-ticker.C:
+				fmt.Println(len(f.msgCh))
+			}
+		}
+	}()
+
 	options := pulsar.ConsumerOptions{
 		Topic:                       "persistent://public/default/" + f.topic,
 		SubscriptionName:            "my-subscription",

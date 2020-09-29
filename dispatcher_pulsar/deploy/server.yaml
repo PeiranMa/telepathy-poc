@@ -33,7 +33,7 @@ metadata:
   labels:
     app: dispatcher
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: dispatcher
@@ -44,7 +44,7 @@ spec:
     spec:
       containers:
       - name: poc
-        image: r4aks.azurecr.io/dispatcher.pulsar.poc:v1.1
+        image: r4aks.azurecr.io/dispatcher.pulsar.poc:v1.2
         command: ["/go/bin/cmd"]
         args: [ "-p", "50051", "-pn", "1","-cn", "1"]
         ports:
